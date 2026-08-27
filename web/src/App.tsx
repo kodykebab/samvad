@@ -170,8 +170,25 @@ export default function App() {
     }
   }
 
-  async function startPtt(peer: BlePeer) {
-    if (pttRecorderRef.current) return // already recording — ignore a duplicate press
+  // Tap-to-toggle, not hold-to-talk: holding a small touch target down
+  // reliably for the length of a whole sentence turned out to be exactly
+  // the kind of finicky interaction that makes people distrust whether
+  // it's actually recording. One tap starts (unmutes), a second tap on the
+  // same peer stops (mutes) — recordingPeerId is who's live right now, or
+  // null. Only one recording session exists at a time (one shared
+  // pttRecorderRef, same as before), so every other peer's button disables
+  // itself while one is active rather than silently doing nothing if tapped.
+  const [recordingPeerId, setRecordingPeerId] = useState<string | null>(null)
+
+  async function togglePtt(peer: BlePeer) {
+    if (recordingPeerId === peer.deviceId) {
+      pttRecorderRef.current?.stop()
+      pttRecorderRef.current = null
+      setRecordingPeerId(null)
+      return
+    }
+    if (pttRecorderRef.current) return // a different peer's recording is live — ignore
+
     const recorder = new PushToTalkRecorder(
       (bytes) => peer.sendVoiceFrame(bytes),
       (err) => appendLog(`[ptt] stream error: ${err}`),
@@ -180,15 +197,11 @@ export default function App() {
     try {
       await recorder.start()
       appendLog(`[ptt] recording -> ${peer.deviceId}`)
+      setRecordingPeerId(peer.deviceId)
     } catch (err) {
       appendLog(`[ptt] failed to start: ${err}`)
       pttRecorderRef.current = null
     }
-  }
-
-  function stopPtt() {
-    pttRecorderRef.current?.stop()
-    pttRecorderRef.current = null
   }
 
   return (
@@ -258,22 +271,17 @@ export default function App() {
                 {peer.deviceId} · secure {peer.remoteFingerprint}
               </span>
               <button
-                // Pointer Events only — deliberately not mouse+touch handlers
-                // side by side. On a real touchscreen a touch also
-                // synthesizes a trailing mousedown/mouseup for legacy-code
-                // compatibility, so mouse+touch handlers together fire
-                // startPtt() twice per physical press: two PushToTalkRecorder
-                // instances race, and the first one's stop() closes the
-                // AudioEncoder out from under the second one's still-running
-                // encode() loop (surfaces as "Cannot call 'encode' on a
-                // closed codec"). Pointer Events unify touch/mouse/pen into
-                // one event stream with no such duplication.
-                onPointerDown={() => startPtt(peer)}
-                onPointerUp={stopPtt}
-                onPointerLeave={stopPtt}
-                onPointerCancel={stopPtt}
+                className={recordingPeerId === peer.deviceId ? 'ptt-active' : undefined}
+                disabled={recordingPeerId !== null && recordingPeerId !== peer.deviceId}
+                onClick={() => togglePtt(peer)}
               >
-                Hold to talk
+                {recordingPeerId === peer.deviceId ? (
+                  <>
+                    <span className="rec-dot">●</span> Talking — tap to stop
+                  </>
+                ) : (
+                  'Talk'
+                )}
               </button>
             </li>
           ))}

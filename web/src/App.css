@@ -251,6 +251,21 @@ button:disabled {
   flex-shrink: 0;
 }
 
+/* Tap-to-toggle talk state: filled solid (same treatment as :active) but
+   held persistently, plus a blinking dot — same blink used on the log
+   panel's live cursor — so "am I actually transmitting right now" never
+   depends on remembering whether you tapped it. No color hue, per this
+   file's own design principle: state reads by fill/weight, not a color. */
+.peer-list button.ptt-active {
+  background: var(--fg);
+  color: #000;
+  border-style: solid;
+}
+.rec-dot {
+  display: inline-block;
+  animation: blink 1s steps(1) infinite;
+}
+
 /* ---- log panel -------------------------------------------------------- */
 
 .log-panel pre {

@@ -133,7 +133,6 @@ export class PushToTalkRecorder {
       const merged = mergeAudioChunks(this.batchBuffer)
       this.batchBuffer = []
       const frames = await this.codec!.encode(merged)
-      this.onError?.(`[diag] chunksPerBatch=${this.chunksPerBatch} frameDurationUs=${this.format!.frameDurationUs} encoded ${frames.length} frame(s), sizes=${frames.map((f) => f.data.byteLength).join(',')}`)
       for (const frame of frames) await this.send(packFrame(frame, this.format!))
     }
     // Whatever's left in batchBuffer is shorter than the encoder's configured
@@ -143,6 +142,14 @@ export class PushToTalkRecorder {
     // recording is an acceptable trade for not crashing on release.
     for (const c of this.batchBuffer) c.close()
     this.batchBuffer = []
+    // encode() no longer flushes per call (see codec.ts) — drain whatever
+    // the encoder is still internally holding onto now that the session's
+    // actually ending, or the last second or so of every recording would
+    // silently never get sent.
+    if (this.codec) {
+      const encoded = await this.codec.drain()
+      for (const frame of encoded) await this.send(packFrame(frame, this.format!))
+    }
   }
 
   stop() {

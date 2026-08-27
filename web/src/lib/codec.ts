@@ -107,11 +107,36 @@ export class PlaceholderLowBitrateCodec implements VoiceCodec {
     })
   }
 
+  // encode() used to call flush() after every single chunk — confirmed on
+  // real hardware that this was silently wrecking audio quality independent
+  // of every other fix tonight (bitrate, frame batching, BLE transport,
+  // playback ordering, codec resource leak). flush() forces the encoder to
+  // immediately finalize and emit whatever it has *right now*, discarding
+  // Opus's normal cross-frame continuity/lookahead — one 60ms encode() call
+  // was measured producing two wildly inconsistent frames (e.g. 239+87
+  // bytes, or 164+8) instead of one clean ~240-byte frame, exactly the kind
+  // of misalignment that sounds "garbled" no matter how high the bitrate
+  // is. Output now drains naturally via the async output callback — encode()
+  // returns whatever's accumulated so far (often lagging by about one
+  // batch, fine for recorded voice notes, not fine for live duplex).
+  // drain() forces out anything still buffered, and must be called once at
+  // the end of a recording session (see PushToTalkRecorder.stop()), not
+  // after every chunk.
+  //
+  // decode() still flushes per call, deliberately NOT mirroring the encode
+  // change: there's no equivalent "session end" hook on the receiving side
+  // (voice frames just arrive whenever a peer talks, with no signal for
+  // "that was the last one"), so skipping flush() here would silently
+  // drop the last frame of every utterance with no way to drain it later.
+  // Per-call flush doesn't carry the same quality cost on decode either —
+  // each incoming frame is already a complete, independent Opus packet
+  // (type: 'key' below), not something benefiting from encoder-style
+  // cross-frame lookahead.
+
   async encode(chunk: AudioData): Promise<EncodedFrame[]> {
     if (!this.encoder) throw new Error('codec was constructed in decode mode, not encode')
     this.encoder.encode(chunk)
     chunk.close()
-    await this.encoder.flush()
     const out = this.pendingEncoded
     this.pendingEncoded = []
     return out
@@ -129,6 +154,14 @@ export class PlaceholderLowBitrateCodec implements VoiceCodec {
     await this.decoder.flush()
     const out = this.pendingDecoded
     this.pendingDecoded = []
+    return out
+  }
+
+  /** Force out any output the encoder is still internally buffering. Call once, at end of a recording session — not per chunk. */
+  async drain(): Promise<EncodedFrame[]> {
+    await this.encoder?.flush()
+    const out = this.pendingEncoded
+    this.pendingEncoded = []
     return out
   }
 
