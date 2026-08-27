@@ -39,7 +39,15 @@ export default function App() {
 
   // --- BLE tier state ---
   const [blePeers, setBlePeers] = useState<BlePeer[]>([])
-  const [bleRole, setBleRole] = useState<'both' | 'peripheral' | 'central'>('central') // TEMP: reliable config for this device pair
+  // 'both' matches ble.ts's own architecturally-correct default (see its
+  // module comment) and the dropdown's "(default)" label below. A prior
+  // commit silently hardcoded this to 'central' for "this device pair" —
+  // since every device runs the same build, that meant *every* phone
+  // defaulted to scan-only and never advertised, so two default installs
+  // could never find each other. Switch to 'peripheral'/'central' per
+  // device only as a workaround for the confirmed concurrent-role GATT
+  // hang on some chipsets (see README's Known limitations).
+  const [bleRole, setBleRole] = useState<'both' | 'peripheral' | 'central'>('both')
   const bleTierRef = useRef<BleTier | null>(null)
   const pttRecorderRef = useRef<PushToTalkRecorder | null>(null)
   const pttPlayersRef = useRef<Map<string, PushToTalkPlayer>>(new Map())

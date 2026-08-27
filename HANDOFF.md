@@ -132,6 +132,43 @@ main cause):
    **Do that before merging, or if you're picking this up after it's
    already merged, be skeptical until someone has.**
 
+**2026-08-27 session — local fixes, not yet pushed/PR'd.** First real
+end-to-end BLE test on this device pair (Samsung SM-G781B + Oppo/OnePlus
+CPH2717, both fresh USB-connected, neither previously configured on this
+dev machine). "BLE calls aren't working" turned out to be two separate,
+compounding bugs — neither in this file's history before now:
+6. `web/src/App.tsx` — `bleRole`'s default had been silently changed from
+   `'both'` to `'central'` in a commit titled just `"xyz"` (no PR, no
+   writeup), with a `// TEMP` comment and no corresponding update to the
+   dropdown's `"Both roles (default)"` label. Since every phone runs the
+   same build, *every* fresh install defaulted to central-only (scan-only,
+   never advertise) — two default installs can never find each other, no
+   error, just silence. This is almost certainly why BLE looked broken
+   before any role was even touched. Reverted the default to `'both'`.
+7. `web/src/lib/ble.ts` — even with roles correctly split (one central, one
+   peripheral), the central side's `requestLEScan({ services: [SAMVAD_
+   SERVICE_UUID] })` — which delegates to Android's native
+   `ScanFilter.setServiceUuid()` — produced zero `onScanResult` callbacks
+   for minutes on the Samsung SM-G781B, despite the peripheral verifiably
+   advertising that exact UUID (confirmed via a raw unfiltered scan that
+   logged every advertised UUID from every nearby device). Switched to an
+   unfiltered native scan with the UUID match done in JS instead; found the
+   real peer within seconds. Root cause not confirmed beyond "this
+   chipset's native ScanFilter is unreliable for 128-bit service UUIDs" —
+   didn't chase it further into AOSP/OEM Bluetooth stack internals. Costs a
+   little extra JS-side churn from irrelevant nearby BLE devices
+   (headphones, etc.) filtering through, which was an acceptable trade for
+   actually working.
+
+With both fixes in place: secure Noise channel established in both
+directions (fingerprints cross-checked on-screen between the two phones),
+and a full push-to-talk round trip was heard on the receiving phone's
+speaker. **Not yet re-verified whether fix #7 holds on the OnePlus/Oppo
+side acting as central** (this session only exercised Samsung-as-central /
+Oppo-as-peripheral, per the existing per-device role-selector workaround
+for the concurrent-role GATT hang) — worth checking the reverse pairing
+before trusting this generalizes past this specific chipset combination.
+
 ## Known issues not yet fixed (from the same investigation)
 
 Identified while diagnosing the quality issue above but out of scope for

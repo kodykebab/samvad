@@ -149,9 +149,22 @@ export class BleTier {
     await BleClient.initialize()
     this.log('[central] initialized, requesting scan...')
     this.scanning = true
-    await BleClient.requestLEScan({ services: [SAMVAD_SERVICE_UUID] }, (result) =>
-      this.onScanResult(result),
-    )
+    // Deliberately unfiltered at the native level — requestLEScan({ services:
+    // [...] }) delegates to Android's ScanFilter.setServiceUuid(), which on a
+    // real Samsung SM-G781B (confirmed on hardware) silently matched nothing:
+    // the peripheral side was verifiably advertising SAMVAD_SERVICE_UUID (a
+    // raw unfiltered scan showed every advertised UUID from every nearby
+    // device, SAMVAD's peripheral included), yet the native-filtered scan
+    // produced zero onScanResult callbacks for minutes straight. Matching
+    // the UUID string ourselves in JS found the same peer within seconds.
+    // Costs a little extra JS-side traffic from irrelevant nearby BLE
+    // devices (headphones, etc.) — worth it for actually working on this
+    // chipset. See HANDOFF.md's BLE bug history for the full writeup.
+    await BleClient.requestLEScan({}, (result) => {
+      if (result.uuids?.some((u) => u.toLowerCase() === SAMVAD_SERVICE_UUID.toLowerCase())) {
+        this.onScanResult(result)
+      }
+    })
     this.log('[central] scanning for SAMVAD peers')
   }
 
