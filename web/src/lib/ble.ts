@@ -272,7 +272,19 @@ export class BleTier {
     if (!peer) return
     for (const piece of chunk(envelope, MAX_BLE_CHUNK_BYTES)) {
       if (peer.role === 'central') {
-        await BleClient.write(
+        // write() (ATT write-with-response) blocks until the peripheral ACKs
+        // at the GATT layer — confirmed on real hardware at ~90ms per write,
+        // bounded by the connection interval. ptt.ts's capture loop awaits
+        // each send() before reading the next mic chunk, so a 60ms audio
+        // frame (2 of these writes) took ~180ms to transmit — 3x slower than
+        // real time. MediaStreamTrackProcessor's internal buffer is small
+        // and drops old frames once full rather than queuing indefinitely,
+        // so falling behind this badly means silently skipped chunks of
+        // speech spliced back-to-back with no gap: exactly what "garbled,
+        // not just laggy" sounds like. The peripheral's RX characteristic
+        // already declares PROPERTY_WRITE_NO_RESPONSE (see
+        // SamvadBlePeripheralPlugin.kt) — it just wasn't used.
+        await BleClient.writeWithoutResponse(
           deviceId,
           SAMVAD_SERVICE_UUID,
           SAMVAD_RX_CHARACTERISTIC_UUID,

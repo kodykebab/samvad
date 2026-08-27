@@ -25,7 +25,15 @@ export interface VoiceCodec {
 }
 
 const SAMPLE_RATE = 16000 // voice-grade; matches Codec2's typical operating rate
-const PLACEHOLDER_BITRATE = 6000 // bps — Opus's practical floor; real Codec2 target is 700-1200 bps
+// bps. Was 6000 ("Opus's practical floor") until confirmed on real hardware
+// that this was the actual cause of garbled, unintelligible audio — at
+// 6000bps over the ~10ms chunks MediaStreamTrackProcessor hands back, each
+// encoded frame carried a mere 7.5 bytes of payload (6000 * 0.010 / 8),
+// nowhere near enough for Opus to encode anything recognizable as speech.
+// 32000 keeps this comfortably above BLE's bandwidth ceiling while actually
+// being audible — still well short of Codec2's eventual 700-1200bps target,
+// which needs the real codec swap (see TODO above), not a bitrate knob.
+const PLACEHOLDER_BITRATE = 32000
 
 export interface CodecFormat {
   sampleRate: number
@@ -40,9 +48,11 @@ export interface CodecFormat {
   frameDurationUs?: number
 }
 
+export type CodecMode = 'encode' | 'decode'
+
 export class PlaceholderLowBitrateCodec implements VoiceCodec {
-  private encoder: AudioEncoder
-  private decoder: AudioDecoder
+  private encoder: AudioEncoder | null = null
+  private decoder: AudioDecoder | null = null
   private pendingEncoded: EncodedFrame[] = []
   private pendingDecoded: AudioData[] = []
 
@@ -52,22 +62,39 @@ export class PlaceholderLowBitrateCodec implements VoiceCodec {
   // its native format instead — configuring Opus for anything else then
   // makes encode() reject every frame with "incompatible with codec
   // parameters".
-  constructor(format: CodecFormat) {
-    this.encoder = new AudioEncoder({
-      output: (chunk) => {
-        const data = new Uint8Array(chunk.byteLength)
-        chunk.copyTo(data)
-        this.pendingEncoded.push({ data, timestampUs: chunk.timestamp })
-      },
-      error: (e) => console.error('[codec] encoder error', e),
-    })
-    this.encoder.configure({
-      codec: 'opus',
-      sampleRate: format.sampleRate,
-      numberOfChannels: format.numberOfChannels,
-      bitrate: PLACEHOLDER_BITRATE,
-      opus: { frameDuration: format.frameDurationUs ?? 20000 },
-    })
+  //
+  // `mode` matters: PushToTalkRecorder only ever calls encode(), and
+  // PushToTalkPlayer only ever calls decode() — but this constructor used to
+  // build *both* an AudioEncoder and an AudioDecoder unconditionally,
+  // wasting one unused codec instance every single time. Confirmed on real
+  // hardware that this caused voice to stop working after a handful of
+  // "Hold to talk" presses (each one makes a brand new PushToTalkRecorder,
+  // hence a brand new codec pair): Android's underlying MediaCodec pool is
+  // finite and system-wide, and closing a codec doesn't always free its slot
+  // instantly, so accumulated unused instances eventually exhaust it —
+  // silently, since AudioEncoder/AudioDecoder construction failures only
+  // surface through their async `error` callback (console-only, never
+  // reaches the app's own log panel), not a thrown exception. Building only
+  // the codec direction actually needed halves the leak.
+  constructor(format: CodecFormat, mode: CodecMode) {
+    if (mode === 'encode') {
+      this.encoder = new AudioEncoder({
+        output: (chunk) => {
+          const data = new Uint8Array(chunk.byteLength)
+          chunk.copyTo(data)
+          this.pendingEncoded.push({ data, timestampUs: chunk.timestamp })
+        },
+        error: (e) => console.error('[codec] encoder error', e),
+      })
+      this.encoder.configure({
+        codec: 'opus',
+        sampleRate: format.sampleRate,
+        numberOfChannels: format.numberOfChannels,
+        bitrate: PLACEHOLDER_BITRATE,
+        opus: { frameDuration: format.frameDurationUs ?? 20000 },
+      })
+      return
+    }
 
     this.decoder = new AudioDecoder({
       output: (audioData) => this.pendingDecoded.push(audioData),
@@ -81,6 +108,7 @@ export class PlaceholderLowBitrateCodec implements VoiceCodec {
   }
 
   async encode(chunk: AudioData): Promise<EncodedFrame[]> {
+    if (!this.encoder) throw new Error('codec was constructed in decode mode, not encode')
     this.encoder.encode(chunk)
     chunk.close()
     await this.encoder.flush()
@@ -90,6 +118,7 @@ export class PlaceholderLowBitrateCodec implements VoiceCodec {
   }
 
   async decode(frame: EncodedFrame): Promise<AudioData[]> {
+    if (!this.decoder) throw new Error('codec was constructed in encode mode, not decode')
     this.decoder.decode(
       new EncodedAudioChunk({
         type: 'key', // Opus frames are independently decodable
@@ -104,8 +133,8 @@ export class PlaceholderLowBitrateCodec implements VoiceCodec {
   }
 
   close() {
-    this.encoder.close()
-    this.decoder.close()
+    this.encoder?.close()
+    this.decoder?.close()
   }
 }
 
